@@ -137,11 +137,15 @@ dialog ol{padding-left:21px}
   .stock-area{display:none}
   .zoom{display:inline-flex;min-height:44px;padding:0 8px;font-size:11px;gap:5px}
   .zoom[aria-pressed=true]{background:#413e2d;border-color:#e9c58b80;color:#ffdfa7}
-  .board-viewport{overflow-x:auto;overscroll-behavior-x:contain;scrollbar-color:#c7ae7c83 transparent}
+  button{touch-action:manipulation}
+  .board-viewport{overflow:clip;overflow-anchor:none}
+  .board-viewport.is-zoomed{overflow-x:auto;overscroll-behavior-x:contain;scrollbar-color:#c7ae7c83 transparent}
   .board{min-height:clamp(245px,42svh,370px);padding-top:9px;padding-bottom:24px}
   .board-viewport.is-zoomed .board{min-width:580px}
-  .board,.card.face{touch-action:pan-y pinch-zoom}
-  .is-zoomed .board,.is-zoomed .card.face{touch-action:pan-x pan-y pinch-zoom}
+  .board{touch-action:pan-y pinch-zoom}
+  .board .card.face,.board .column[role=button]{touch-action:pinch-zoom;-webkit-touch-callout:none}
+  .is-zoomed .board{touch-action:pan-x pan-y pinch-zoom}
+  .is-zoomed .board .card.face,.is-zoomed .board .column[role=button]{touch-action:pan-x pinch-zoom}
   .card.face .corner{top:5%;left:7%;font-size:clamp(12px,3.25vw,20px);letter-spacing:-.045em;gap:.08em}
   .card.face .reverse{inset:auto 7% 5% auto}
   .is-zoomed .card.face .corner{font-size:19px}
@@ -302,6 +306,8 @@ let hintTimer;
 let messageTimer;
 let pointer = null;
 let suppressClickUntil = 0;
+let touchTap = null;
+let ignoreTouchClick = false;
 let dialogConfirm = null;
 let zoomed = false;
 try { zoomed = localStorage.getItem(saveKey + '/large-cards') === 'true'; } catch {}
@@ -398,6 +404,7 @@ function updateClock() {
 }
 
 function render() {
+  const boardScroll = boardViewport.scrollLeft;
   board.innerHTML = state.columns.map((column, col) => {
     const position = column.length ? ' aria-label="' + (col + 1) + '번째 열"' :
       ' role="button" tabindex="0" aria-label="' + (col + 1) + '번째 빈 열"';
@@ -407,6 +414,7 @@ function render() {
   }).join('');
   [...board.children].forEach((column) => column.lastElementChild.classList.add('landing'));
   positionCards();
+  if (boardViewport.scrollLeft !== boardScroll) boardViewport.scrollLeft = boardScroll;
   byId('books').innerHTML = Array.from({ length: 8 }, (_, index) => {
     const suit = suits[state.books[index]];
     return '<span class="book' + (suit ? ' filled' : '') + (suit?.red ? ' red' : '') + '">' + (suit?.symbol || '·') + '</span>';
@@ -628,6 +636,7 @@ function pointerColumn(x, y) {
 
 board.addEventListener('click', (event) => {
   if (event.detail && performance.now() < suppressClickUntil) return;
+  if (event.detail && ignoreTouchClick && (!event.pointerType || event.pointerType === 'touch')) return;
   const column = event.target.closest('.column');
   if (!column && (!selected || !event.detail)) return;
   const card = event.target.closest('.face');
@@ -650,8 +659,16 @@ board.addEventListener('keydown', (event) => {
 
 board.addEventListener('pointerdown', (event) => {
   if (!event.isPrimary || event.button !== 0 || pointer) return;
-  if (event.pointerType === 'touch' && mobile.matches && zoomed) return;
   const element = event.target.closest('.face');
+  if (event.pointerType === 'touch' && mobile.matches) {
+    ignoreTouchClick = false;
+    if (element || selected || event.target.closest('.column[role=button]')) {
+      touchTap = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      // Keep the browser from scrolling a card into focus. CSS controls touch panning.
+      event.preventDefault();
+    }
+    return;
+  }
   if (!element) return;
   const col = Number(element.closest('.column').dataset.col);
   const index = Number(element.dataset.index);
@@ -661,6 +678,10 @@ board.addEventListener('pointerdown', (event) => {
 });
 
 window.addEventListener('pointermove', (event) => {
+  if (event.pointerId === touchTap?.id) {
+    if (Math.hypot(event.clientX - touchTap.x, event.clientY - touchTap.y) >= 12) ignoreTouchClick = true;
+    return;
+  }
   if (event.pointerId !== pointer?.id) return;
   const dx = event.clientX - pointer.x;
   const dy = event.clientY - pointer.y;
@@ -696,6 +717,11 @@ window.addEventListener('pointermove', (event) => {
 });
 
 function releasePointer(event) {
+  if (event.pointerId === touchTap?.id) {
+    if (event.type === 'pointercancel') ignoreTouchClick = true;
+    touchTap = null;
+    return;
+  }
   if (event.pointerId !== pointer?.id) return;
   const source = pointer;
   pointer = null;
